@@ -38,11 +38,12 @@ const (
 	KindNil    byte = 7 // SQL NULL  -> Vals: "" (value ignored on decode)
 )
 
-// encodeRow converts a slice of concrete Go values (as returned by a DB
+// EncodeRow converts a slice of concrete Go values (as returned by a DB
 // driver's scan) into a DBRow with per-column Kind tags and string-encoded
 // slots. Unsupported concrete types return an error — do NOT coerce silently,
 // because a missed type means a wrong Kind on the wire (design §4 encode table).
-func encodeRow(values []any) (DBRow, error) {
+// Exported so the source (scan time) can call it; the sink calls decodeRowToArgs.
+func EncodeRow(values []any) (DBRow, error) {
 	types := make([]byte, len(values))
 	vals := make([]string, len(values))
 	for i, v := range values {
@@ -74,6 +75,10 @@ func encodeRow(values []any) (DBRow, error) {
 	}
 	return DBRow{Types: types, Vals: vals}, nil
 }
+
+// encodeRow is the unexported alias kept for internal/test callers. It
+// delegates to the now-exported EncodeRow.
+func encodeRow(values []any) (DBRow, error) { return EncodeRow(values) }
 
 // decodeRowToArgs inverts encodeRow: reads each Kind tag and converts the
 // string slot back to the typed Go value the driver wants as an INSERT param
