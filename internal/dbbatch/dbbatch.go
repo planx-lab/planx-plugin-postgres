@@ -80,10 +80,18 @@ func EncodeRow(values []any) (DBRow, error) {
 // delegates to the now-exported EncodeRow.
 func encodeRow(values []any) (DBRow, error) { return EncodeRow(values) }
 
-// decodeRowToArgs inverts encodeRow: reads each Kind tag and converts the
+// DecodeRowToArgs inverts EncodeRow: reads each Kind tag and converts the
 // string slot back to the typed Go value the driver wants as an INSERT param
 // (int64, time.Time, []byte, nil, ...). This is where type fidelity pays off
 // — the INSERT params are correctly typed rather than guessed from a string.
+// Exported so the sink (WriteBatch time) can call it.
+func DecodeRowToArgs(row DBRow) ([]any, error) {
+	return decodeRowToArgs(row)
+}
+
+// decodeRowToArgs is the unexported implementation; DecodeRowToArgs is the
+// exported alias. Kept so internal/test callers in the source package can keep
+// using the lowercase name unchanged.
 func decodeRowToArgs(row DBRow) ([]any, error) {
 	if len(row.Types) != len(row.Vals) {
 		return nil, fmt.Errorf("dbbatch: row length mismatch: %d types, %d vals", len(row.Types), len(row.Vals))
