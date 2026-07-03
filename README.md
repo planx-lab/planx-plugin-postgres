@@ -47,6 +47,18 @@ engine; it Discovers the connector automatically (ADR-008, no manifest).
 
 The Sink is append-only in v1 (CopyFrom path; no upsert/`ON CONFLICT`).
 
+## Performance
+
+| Pipeline | Rows | Elapsed | Throughput |
+|----------|------|---------|------------|
+| PG→PG (CopyFrom) | 10,000 | 0.65s | 15,385 rows/s |
+
+Measured on Docker PostgreSQL 16.11-alpine, Apple Silicon (darwin/arm64), local loopback (127.0.0.1), `batchRows=1000`. Uses pgx binary COPY protocol. NULL preservation verified.
+
+## Cross-Connector
+
+This connector's `DBBatch` payload is gob-compatible with `planx-plugin-sqlserver` via the shared `gob.RegisterName("planx.io/dbbatch.DBBatch", ...)` wire name. A `postgres-source → sqlserver-sink` pipeline is validated at 3,676 rows/s (10,000 rows, byte-equal to source).
+
 ## Specification Authority
 The authoritative spec lives in
 [planx-spec](https://github.com/planx-lab/planx-spec) — see
