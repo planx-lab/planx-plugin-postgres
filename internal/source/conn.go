@@ -7,13 +7,22 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// querier is the DB-free testability seam (design §8). The production Source
-// holds a pgxpool-backed querier; tests inject a fakeQuerier that yields canned
+// Querier is the DB-free testability seam (design §8). The production Source
+// holds a pgxpool-backed Querier; tests inject a fakeQuerier that yields canned
 // rows. This is THE single decision that lets unit tests run without Postgres.
-type querier interface {
+//
+// Exported so cmd/plugin can wire connectQuerier into DiscoverSchema's callback
+// (DiscoverSchema itself is a standalone func taking this seam).
+type Querier interface {
 	Query(ctx context.Context, sql string, args ...any) (rowsIterator, error)
 	Close()
 }
+
+// querier is a transparent alias for Querier, retained so existing internal
+// references (the Source field, ConnectQuerier's callers, test fakes) read
+// unchanged. DiscoverSchema's callback uses the exported Querier so cmd/plugin
+// can wire ConnectQuerier from outside the package.
+type querier = Querier
 
 // rowsIterator mirrors the subset of pgx.Rows the Source needs. Named Values
 // (not ScanValues) to match pgx.Rows.Values() exactly — heterogeneous []any
