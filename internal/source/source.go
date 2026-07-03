@@ -76,7 +76,7 @@ func (s *Source) Init(ctx context.Context, cfg []byte) error {
 	}
 	s.q = &pgQuerier{pool: pool}
 
-	rows, err := s.q.Query(ctx, s.cfg.Query)
+	rows, err := s.q.Query(context.Background(), s.cfg.Query)
 	if err != nil {
 		s.q.Close()
 		return fmt.Errorf("postgres source: query: %w", err)
