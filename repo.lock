@@ -11,7 +11,7 @@ MUST comply with:
 
 ## ALLOWED DIRECTORIES (Connector pattern)
 cmd/plugin/
-internal/{source,sink,dbbatch}/
+internal/{source,sink,dbbatch,dbcommon}/
 go.mod
 
 ## FORBIDDEN

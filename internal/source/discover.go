@@ -2,10 +2,10 @@ package source
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/planx-lab/planx-plugin-postgres/internal/dbcommon"
 	"github.com/planx-lab/planx-sdk-go/sdk"
 )
 
@@ -19,11 +19,11 @@ import (
 func DiscoverSchema(ctx context.Context, config []byte, connect func(Config) (querier, error)) (*sdk.SchemaDiscovery, error) {
 	var cfg Config
 	if len(config) > 0 {
-		if err := json.Unmarshal(config, &cfg); err != nil {
-			return nil, fmt.Errorf("postgres source: config: %w", err)
+		if err := dbcommon.Parse(string(config), "postgres source", &cfg); err != nil {
+			return nil, err
 		}
 	}
-	applyDefaults(&cfg)
+	dbcommon.ApplyDefaults(&cfg.DSNConfig)
 	q, err := connect(cfg)
 	if err != nil {
 		return nil, err

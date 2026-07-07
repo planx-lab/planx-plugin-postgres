@@ -5,33 +5,23 @@ package sink
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/planx-lab/planx-plugin-postgres/internal/dbbatch"
+	"github.com/planx-lab/planx-plugin-postgres/internal/dbcommon"
 	"github.com/planx-lab/planx-sdk-go/sdk"
 )
 
 // Config configures the postgres-sink component (design §7 ConfigSchema).
+// Shared connection fields live in dbcommon.DSNConfig (embedded); sink adds
+// Columns (optional override; if empty, uses batch column schema).
 type Config struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	User     string `json:"user"`
-	Password string `json:"password"`
-	Table    string `json:"table"`
-	Columns  string `json:"columns"` // comma-separated; if empty, uses batch column schema
-	SSLMode  string `json:"sslmode"`
+	dbcommon.DSNConfig
+	Columns string `json:"columns"`
 }
-
-const (
-	defaultPort    = 5432
-	defaultSSLMode = "disable"
-)
 
 // Sink bulk-inserts DBBatch rows via pgx CopyFrom (binary COPY protocol).
 // CopyFrom is append-only — no ON CONFLICT (design §5 v1 decision).
@@ -50,15 +40,15 @@ func New() sdk.SinkSPI { return &Sink{} }
 // DSN, connects (pgxpool), and pings. The connection handle is stored as a
 // copyFromPool seam so WriteBatch and tests go through the same interface.
 func (s *Sink) Init(ctx context.Context, cfg []byte) error {
-	if err := parseConfig(string(cfg), &s.cfg); err != nil {
+	if err := dbcommon.Parse(string(cfg), "postgres sink", &s.cfg); err != nil {
 		return err
 	}
-	if err := validateConfig(&s.cfg); err != nil {
+	if err := dbcommon.ValidateCommon(s.cfg.DSNConfig, "postgres sink"); err != nil {
 		return err
 	}
-	applyDefaults(&s.cfg)
+	dbcommon.ApplyDefaults(&s.cfg.DSNConfig)
 
-	dsn := buildDSN(s.cfg)
+	dsn := dbcommon.BuildDSN(s.cfg.DSNConfig)
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return fmt.Errorf("postgres sink: connect: %w", err)
@@ -69,63 +59,6 @@ func (s *Sink) Init(ctx context.Context, cfg []byte) error {
 	}
 	s.pool = &pgPool{pool: pool}
 	return nil
-}
-
-// parseConfig unmarshals the JSON config, wrapping parse errors with the
-// connector/component prefix (design: "<connector> sink: config: %w").
-func parseConfig(raw string, cfg *Config) error {
-	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
-		return fmt.Errorf("postgres sink: config: %w", err)
-	}
-	return nil
-}
-
-// validateConfig enforces the required fields from design §7.
-func validateConfig(cfg *Config) error {
-	if cfg.Host == "" {
-		return fmt.Errorf("postgres sink: host is required")
-	}
-	if cfg.Database == "" {
-		return fmt.Errorf("postgres sink: database is required")
-	}
-	if cfg.User == "" {
-		return fmt.Errorf("postgres sink: user is required")
-	}
-	if cfg.Password == "" {
-		return fmt.Errorf("postgres sink: password is required")
-	}
-	if cfg.Table == "" {
-		return fmt.Errorf("postgres sink: table is required")
-	}
-	return nil
-}
-
-// applyDefaults fills port/sslmode when unset (design §7).
-func applyDefaults(cfg *Config) {
-	if cfg.Port == 0 {
-		cfg.Port = defaultPort
-	}
-	if cfg.SSLMode == "" {
-		cfg.SSLMode = defaultSSLMode
-	}
-}
-
-// buildDSN constructs the pgx connection URL via net/url so the password is
-// URL-encoded safely (url.UserPassword handles special chars). The password is
-// never fmt.Printf-ed by this package. Identical to the source's buildDSN.
-func buildDSN(cfg Config) string {
-	u := url.URL{
-		Scheme: "postgres",
-		Host:   fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Path:   cfg.Database,
-	}
-	if cfg.User != "" {
-		u.User = url.UserPassword(cfg.User, cfg.Password)
-	}
-	q := u.Query()
-	q.Set("sslmode", cfg.SSLMode)
-	u.RawQuery = q.Encode()
-	return u.String()
 }
 
 // parseColumns splits a comma-separated column list, trimming whitespace. Empty

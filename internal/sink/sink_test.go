@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/planx-lab/planx-plugin-postgres/internal/dbbatch"
+	"github.com/planx-lab/planx-plugin-postgres/internal/dbcommon"
 	"github.com/planx-lab/planx-sdk-go/sdk"
 )
 
@@ -92,8 +93,8 @@ func TestSink_New_ReturnsSinkSPI(t *testing.T) {
 func TestSink_Init_ParsesValidConfig(t *testing.T) {
 	cfg := Config{}
 	raw := `{"host":"db","port":6543,"database":"shop","user":"u","password":"p","table":"users","columns":"id,name","sslmode":"require"}`
-	if err := parseConfig(raw, &cfg); err != nil {
-		t.Fatalf("parseConfig: %v", err)
+	if err := dbcommon.Parse(raw, "postgres sink", &cfg); err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
 	if cfg.Host != "db" || cfg.Port != 6543 || cfg.Database != "shop" ||
 		cfg.User != "u" || cfg.Password != "p" || cfg.Table != "users" ||
@@ -104,7 +105,7 @@ func TestSink_Init_ParsesValidConfig(t *testing.T) {
 
 func TestSink_Init_InvalidJSON_WrappedError(t *testing.T) {
 	var cfg Config
-	err := parseConfig(`{not json`, &cfg)
+	err := dbcommon.Parse(`{not json`, "postgres sink", &cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -129,10 +130,10 @@ func TestSink_Init_MissingRequired(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var cfg Config
-			if err := parseConfig(c.json, &cfg); err != nil {
-				t.Fatalf("parseConfig: %v", err)
+			if err := dbcommon.Parse(c.json, "postgres sink", &cfg); err != nil {
+				t.Fatalf("Parse: %v", err)
 			}
-			if err := validateConfig(&cfg); err == nil {
+			if err := dbcommon.ValidateCommon(cfg.DSNConfig, "postgres sink"); err == nil {
 				t.Fatalf("expected error for missing %s", c.want)
 			} else if !strings.Contains(err.Error(), c.want) {
 				t.Fatalf("missing %s: got %q", c.want, err.Error())
@@ -144,13 +145,13 @@ func TestSink_Init_MissingRequired(t *testing.T) {
 func TestSink_Init_DefaultsApplied(t *testing.T) {
 	var cfg Config
 	raw := `{"host":"h","database":"d","user":"u","password":"p","table":"t"}`
-	if err := parseConfig(raw, &cfg); err != nil {
-		t.Fatalf("parseConfig: %v", err)
+	if err := dbcommon.Parse(raw, "postgres sink", &cfg); err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
-	if err := validateConfig(&cfg); err != nil {
-		t.Fatalf("validateConfig: %v", err)
+	if err := dbcommon.ValidateCommon(cfg.DSNConfig, "postgres sink"); err != nil {
+		t.Fatalf("ValidateCommon: %v", err)
 	}
-	applyDefaults(&cfg)
+	dbcommon.ApplyDefaults(&cfg.DSNConfig)
 	if cfg.Port != 5432 {
 		t.Errorf("port default: got %d, want 5432", cfg.Port)
 	}
@@ -166,7 +167,7 @@ func TestSink_Init_DefaultsApplied(t *testing.T) {
 // (a) empty batch is a NO-OP — CopyFrom must NOT be called.
 func TestSink_WriteBatch_EmptyBatch_NoOp(t *testing.T) {
 	p := &fakePool{}
-	s := newSinkWithPool(Config{Table: "users"}, p)
+	s := newSinkWithPool(Config{DSNConfig: dbcommon.DSNConfig{Table: "users"}}, p)
 
 	err := s.WriteBatch(dbbatch.DBBatch{Columns: []string{"id"}, Rows: nil})
 	if err != nil {
@@ -183,7 +184,7 @@ func TestSink_WriteBatch_EmptyBatch_NoOp(t *testing.T) {
 // (b) type-assertion failure returns a clear error.
 func TestSink_WriteBatch_TypeAssertionFailure(t *testing.T) {
 	p := &fakePool{}
-	s := newSinkWithPool(Config{Table: "users"}, p)
+	s := newSinkWithPool(Config{DSNConfig: dbcommon.DSNConfig{Table: "users"}}, p)
 
 	err := s.WriteBatch([][]string{{"a", "b"}}) // wrong type — not dbbatch.DBBatch
 	if err == nil {
@@ -215,7 +216,7 @@ func TestSink_WriteBatch_ValidBatch_TypedArgs(t *testing.T) {
 	}
 
 	p := &fakePool{}
-	s := newSinkWithPool(Config{Table: "users"}, p)
+	s := newSinkWithPool(Config{DSNConfig: dbcommon.DSNConfig{Table: "users"}}, p)
 
 	batch := dbbatch.DBBatch{
 		Columns: []string{"i", "f", "s", "b", "t", "by", "n"},
@@ -284,7 +285,7 @@ func TestSink_WriteBatch_ColumnsOverrideFromConfig(t *testing.T) {
 	}
 	p := &fakePool{}
 	// Config.Columns = "user_id,name" must WIN over batch.Columns ["id","nm"].
-	s := newSinkWithPool(Config{Table: "users", Columns: "user_id,name"}, p)
+	s := newSinkWithPool(Config{DSNConfig: dbcommon.DSNConfig{Table: "users"}, Columns: "user_id,name"}, p)
 
 	batch := dbbatch.DBBatch{
 		Columns: []string{"id", "nm"},
@@ -311,7 +312,7 @@ func TestSink_WriteBatch_NullSlotBecomesNilArg(t *testing.T) {
 		t.Fatalf("EncodeRow: %v", err)
 	}
 	p := &fakePool{}
-	s := newSinkWithPool(Config{Table: "t"}, p)
+	s := newSinkWithPool(Config{DSNConfig: dbcommon.DSNConfig{Table: "t"}}, p)
 
 	if err := s.WriteBatch(dbbatch.DBBatch{
 		Columns: []string{"a", "b"},
@@ -331,7 +332,7 @@ func TestSink_WriteBatch_NullSlotBecomesNilArg(t *testing.T) {
 func TestSink_WriteBatch_CopyFromError_Wrapped(t *testing.T) {
 	copyErr := errors.New("connection refused")
 	p := &fakePool{copyErr: copyErr}
-	s := newSinkWithPool(Config{Table: "t"}, p)
+	s := newSinkWithPool(Config{DSNConfig: dbcommon.DSNConfig{Table: "t"}}, p)
 
 	row, err := dbbatch.EncodeRow([]any{int64(1)})
 	if err != nil {

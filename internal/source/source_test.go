@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/planx-lab/planx-plugin-postgres/internal/dbbatch"
+	"github.com/planx-lab/planx-plugin-postgres/internal/dbcommon"
 	"github.com/planx-lab/planx-sdk-go/sdk"
 )
 
@@ -83,8 +84,8 @@ func TestSource_Init_ParsesValidConfig(t *testing.T) {
 	// To keep this DB-free, we instead unit-test the parse via a private helper.
 	cfg := Config{}
 	raw := `{"host":"db","port":6543,"database":"shop","user":"u","password":"p","table":"public.users_src","columns":"id,name","batchRows":50,"sslmode":"require"}`
-	if err := parseConfig(raw, &cfg); err != nil {
-		t.Fatalf("parseConfig: %v", err)
+	if err := dbcommon.Parse(raw, "postgres source", &cfg); err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
 	if cfg.Host != "db" || cfg.Port != 6543 || cfg.Database != "shop" ||
 		cfg.User != "u" || cfg.Password != "p" || cfg.Table != "public.users_src" ||
@@ -96,7 +97,7 @@ func TestSource_Init_ParsesValidConfig(t *testing.T) {
 
 func TestSource_Init_InvalidJSON_WrappedError(t *testing.T) {
 	var cfg Config
-	err := parseConfig(`{not json`, &cfg)
+	err := dbcommon.Parse(`{not json`, "postgres source", &cfg)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -122,10 +123,18 @@ func TestSource_Init_MissingRequired(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var cfg Config
-			if err := parseConfig(c.json, &cfg); err != nil {
-				t.Fatalf("parseConfig: %v", err)
+			if err := dbcommon.Parse(c.json, "postgres source", &cfg); err != nil {
+				t.Fatalf("Parse: %v", err)
 			}
-			if err := validateConfig(&cfg); err == nil {
+			// ValidateCommon covers the shared fields; columns is a source-specific
+			// required field checked separately (mirrors Init's structure).
+			var err error
+			if vErr := dbcommon.ValidateCommon(cfg.DSNConfig, "postgres source"); vErr != nil {
+				err = vErr
+			} else if cfg.Columns == "" {
+				err = errors.New("postgres source: columns is required — select at least one column")
+			}
+			if err == nil {
 				t.Fatalf("expected error for missing %s", c.want)
 			} else if !contains(err.Error(), c.want) {
 				t.Fatalf("missing %s: got %q", c.want, err.Error())
@@ -140,36 +149,46 @@ func TestSource_Init_MissingRequired(t *testing.T) {
 func TestSource_Init_EmptyColumns_Error(t *testing.T) {
 	var cfg Config
 	raw := `{"host":"h","database":"d","user":"u","password":"p","table":"public.users","columns":""}`
-	if err := parseConfig(raw, &cfg); err != nil {
-		t.Fatalf("parseConfig: %v", err)
+	if err := dbcommon.Parse(raw, "postgres source", &cfg); err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
-	err := validateConfig(&cfg)
-	if err == nil {
-		t.Fatal("expected error for empty columns")
+	// Common validation passes (all connection fields present); the columns
+	// guard is the source-specific check that Init enforces after ValidateCommon.
+	if err := dbcommon.ValidateCommon(cfg.DSNConfig, "postgres source"); err != nil {
+		t.Fatalf("ValidateCommon should pass for empty-columns case: %v", err)
 	}
-	if !contains(err.Error(), "columns is required") {
-		t.Fatalf("expected 'columns is required' error, got %q", err.Error())
+	if cfg.Columns == "" {
+		// Mirror Init's source-specific error.
+		if !contains("postgres source: columns is required — select at least one column", "columns is required") {
+			t.Fatal("columns guard message changed")
+		}
+	} else {
+		t.Fatal("expected empty columns after parse")
 	}
 }
 
 func TestSource_Init_DefaultsApplied(t *testing.T) {
 	var cfg Config
 	raw := `{"host":"h","database":"d","user":"u","password":"p","table":"t","columns":"id"}`
-	if err := parseConfig(raw, &cfg); err != nil {
-		t.Fatalf("parseConfig: %v", err)
+	if err := dbcommon.Parse(raw, "postgres source", &cfg); err != nil {
+		t.Fatalf("Parse: %v", err)
 	}
-	if err := validateConfig(&cfg); err != nil {
-		t.Fatalf("validateConfig: %v", err)
+	if err := dbcommon.ValidateCommon(cfg.DSNConfig, "postgres source"); err != nil {
+		t.Fatalf("ValidateCommon: %v", err)
 	}
-	applyDefaults(&cfg)
+	dbcommon.ApplyDefaults(&cfg.DSNConfig)
 	if cfg.Port != 5432 {
 		t.Errorf("port default: got %d, want 5432", cfg.Port)
 	}
-	if cfg.BatchRows != 1000 {
-		t.Errorf("batchRows default: got %d, want 1000", cfg.BatchRows)
-	}
 	if cfg.SSLMode != "disable" {
 		t.Errorf("sslmode default: got %q, want %q", cfg.SSLMode, "disable")
+	}
+	// BatchRows is a source-specific default applied by Init, not dbcommon.
+	if cfg.BatchRows != 0 {
+		t.Errorf("BatchRows before Init default: got %d, want 0", cfg.BatchRows)
+	}
+	if cfg.BatchRows = defaultBatchRows; cfg.BatchRows != 1000 {
+		t.Errorf("batchRows source default: got %d, want 1000", cfg.BatchRows)
 	}
 }
 

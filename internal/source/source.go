@@ -5,13 +5,12 @@ package source
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/planx-lab/planx-plugin-postgres/internal/dbbatch"
+	"github.com/planx-lab/planx-plugin-postgres/internal/dbcommon"
 	"github.com/planx-lab/planx-sdk-go/sdk"
 )
 
@@ -20,23 +19,16 @@ import (
 // Source now builds `SELECT {cols} FROM {table}` internally so no user-supplied
 // SQL reaches the DB. DiscoverSchema introspects information_schema to guide
 // table/column selection in the Designer.
+//
+// The shared connection fields live in dbcommon.DSNConfig (embedded); source
+// adds Columns (required) and BatchRows.
 type Config struct {
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Database  string `json:"database"`
-	User      string `json:"user"`
-	Password  string `json:"password"`
-	Table     string `json:"table"`
+	dbcommon.DSNConfig
 	Columns   string `json:"columns"`
 	BatchRows int    `json:"batchRows"`
-	SSLMode   string `json:"sslmode"`
 }
 
-const (
-	defaultPort      = 5432
-	defaultBatchRows = 1000
-	defaultSSLMode   = "disable"
-)
+const defaultBatchRows = 1000
 
 // Source reads a finite SELECT result set in row batches. EOF terminates the
 // stream so the DAG runtime reaches SUCCEEDED.
@@ -58,13 +50,22 @@ func New() sdk.SourceSPI { return &Source{} }
 // (pgxpool), and issues the SELECT — built internally from table+columns
 // (ADR-013) — to obtain a rows cursor. No user-supplied SQL reaches the DB.
 func (s *Source) Init(ctx context.Context, cfg []byte) error {
-	if err := parseConfig(string(cfg), &s.cfg); err != nil {
+	if err := dbcommon.Parse(string(cfg), "postgres source", &s.cfg); err != nil {
 		return err
 	}
-	if err := validateConfig(&s.cfg); err != nil {
+	if err := dbcommon.ValidateCommon(s.cfg.DSNConfig, "postgres source"); err != nil {
 		return err
 	}
-	applyDefaults(&s.cfg)
+	if s.cfg.Columns == "" {
+		// Empty columns used to fall back to "SELECT *" — dangerous if the
+		// upstream schema changes (silent pipeline breakage). Require an
+		// explicit column selection.
+		return fmt.Errorf("postgres source: columns is required — select at least one column")
+	}
+	dbcommon.ApplyDefaults(&s.cfg.DSNConfig)
+	if s.cfg.BatchRows <= 0 {
+		s.cfg.BatchRows = defaultBatchRows
+	}
 
 	q, err := ConnectQuerier(ctx, s.cfg)
 	if err != nil {
@@ -88,7 +89,7 @@ func (s *Source) Init(ctx context.Context, cfg []byte) error {
 // Init so DiscoverSchema can reuse the same connect path against a temporary
 // pool (opened, queried, closed) without constructing a Source.
 func ConnectQuerier(ctx context.Context, cfg Config) (Querier, error) {
-	dsn := buildDSN(cfg)
+	dsn := dbcommon.BuildDSN(cfg.DSNConfig)
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres source: connect: %w", err)
@@ -98,72 +99,6 @@ func ConnectQuerier(ctx context.Context, cfg Config) (Querier, error) {
 		return nil, fmt.Errorf("postgres source: ping: %w", err)
 	}
 	return &pgQuerier{pool: pool}, nil
-}
-
-// parseConfig unmarshals the JSON config, wrapping parse errors with the
-// connector/component prefix (design: "<connector> source: config: %w").
-func parseConfig(raw string, cfg *Config) error {
-	if err := json.Unmarshal([]byte(raw), cfg); err != nil {
-		return fmt.Errorf("postgres source: config: %w", err)
-	}
-	return nil
-}
-
-// validateConfig enforces the required fields from design §4.
-func validateConfig(cfg *Config) error {
-	if cfg.Host == "" {
-		return fmt.Errorf("postgres source: host is required")
-	}
-	if cfg.Database == "" {
-		return fmt.Errorf("postgres source: database is required")
-	}
-	if cfg.User == "" {
-		return fmt.Errorf("postgres source: user is required")
-	}
-	if cfg.Password == "" {
-		return fmt.Errorf("postgres source: password is required")
-	}
-	if cfg.Table == "" {
-		return fmt.Errorf("postgres source: table is required")
-	}
-	if cfg.Columns == "" {
-		// Empty columns used to fall back to "SELECT *" — dangerous if the
-		// upstream schema changes (silent pipeline breakage). Require an
-		// explicit column selection.
-		return fmt.Errorf("postgres source: columns is required — select at least one column")
-	}
-	return nil
-}
-
-// applyDefaults fills port/batchRows/sslmode when unset (design §4).
-func applyDefaults(cfg *Config) {
-	if cfg.Port == 0 {
-		cfg.Port = defaultPort
-	}
-	if cfg.BatchRows <= 0 {
-		cfg.BatchRows = defaultBatchRows
-	}
-	if cfg.SSLMode == "" {
-		cfg.SSLMode = defaultSSLMode
-	}
-}
-
-// buildDSN constructs the pgx connection URL via net/url so the password is
-// URL-encoded safely (url.UserPassword handles special chars). The password is
-// never fmt.Printf-ed by this package.
-func buildDSN(cfg Config) string {
-	u := url.URL{
-		Scheme: "postgres",
-		Host:   fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
-		Path:   cfg.Database,
-	}
-	if cfg.User != "" {
-		u.User = url.UserPassword(cfg.User, cfg.Password)
-	}
-	q := u.Query()
-	q.Set("sslmode", cfg.SSLMode)
-	u.RawQuery = q.Encode()
-	return u.String()
 }
 
 // ReadBatch reads up to BatchRows records and returns them as a dbbatch.DBBatch.
